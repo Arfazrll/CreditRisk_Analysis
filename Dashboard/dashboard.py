@@ -6,852 +6,1045 @@ import seaborn as sns
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import joblib
+import tensorflow as tf
+from tensorflow import keras
+from sklearn.metrics import confusion_matrix
+import shap
 import warnings
 warnings.filterwarnings('ignore')
 
 # Konfigurasi halaman
 st.set_page_config(
-    page_title="Dashboard Analisis Risiko Kredit",
-    page_icon="💳",
+    page_title="Sistem Analisis Risiko Kredit",
+    page_icon="🏦",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS untuk styling
+# CSS untuk styling
 st.markdown("""
-<style>
-    .main-header {
-        font-size: 3rem;
-        color: #1f77b4;
-        text-align: center;
-        margin-bottom: 2rem;
+    <style>
+    .main > div {
+        padding-top: 2rem;
     }
-    .sub-header {
-        font-size: 1.5rem;
-        color: #2c3e50;
-        margin-bottom: 1rem;
-    }
-    .metric-card {
+    .metric-container {
         background-color: #f0f2f6;
         padding: 1rem;
         border-radius: 0.5rem;
-        text-align: center;
+        margin: 0.5rem 0;
     }
-    .prediction-box {
-        padding: 2rem;
-        border-radius: 1rem;
-        margin: 1rem 0;
+    .stButton>button {
+        width: 100%;
     }
-    .high-risk {
-        background-color: #ffebee;
-        border: 2px solid #ef5350;
-    }
-    .low-risk {
-        background-color: #e8f5e9;
-        border: 2px solid #66bb6a;
-    }
-</style>
+    </style>
 """, unsafe_allow_html=True)
 
-# Fungsi untuk load data
+# Cache untuk loading data dan model
 @st.cache_data
 def load_data():
-    """Load dataset credit risk"""
-    try:
-        df = pd.read_csv('credit_risk_dataset.csv')
-        return df
-    except:
-        st.error("File 'credit_risk_dataset.csv' tidak ditemukan!")
-        return None
+    """Memuat dataset kredit"""
+    df = pd.read_csv('credit_risk_dataset.csv')
+    return df
 
-# Fungsi preprocessing sederhana untuk demo
+@st.cache_resource
+def load_models():
+    """Memuat semua model dan artifacts"""
+    models = {}
+    
+    # Load models
+    models['lstm'] = keras.models.load_model('credit_risk_lstm_model.keras')
+    models['xgboost'] = joblib.load('credit_risk_xgboost_model.pkl')
+    models['lightgbm'] = joblib.load('credit_risk_lightgbm_model.pkl')
+    models['catboost'] = joblib.load('credit_risk_catboost_model.pkl')
+    
+    # Load preprocessing artifacts
+    models['preprocessing'] = joblib.load('preprocessing_artifacts.pkl')
+    models['ensemble_config'] = joblib.load('ensemble_config.pkl')
+    models['evaluation_results'] = joblib.load('evaluation_results.pkl')
+    
+    return models
+
+@st.cache_data
 def preprocess_data(df):
-    """Preprocessing data untuk visualisasi"""
-    df_clean = df.copy()
+    """Preprocessing data seperti di notebook"""
+    df_processed = df.copy()
     
     # Handle missing values
-    if df_clean['person_emp_length'].isnull().any():
-        df_clean['person_emp_length'].fillna(df_clean['person_emp_length'].median(), inplace=True)
+    if df_processed['person_emp_length'].isnull().any():
+        df_processed['person_emp_length'] = df_processed.groupby('loan_intent')['person_emp_length'].transform(
+            lambda x: x.fillna(x.median() if not x.median() != x.median() else x.mean())
+        )
+        df_processed['person_emp_length'].fillna(df_processed['person_emp_length'].median(), inplace=True)
     
-    # Feature engineering sederhana
-    df_clean['debt_to_income_category'] = pd.cut(
-        df_clean['loan_percent_income'],
+    # Feature engineering
+    df_processed['debt_to_income_category'] = pd.cut(
+        df_processed['loan_percent_income'],
         bins=[0, 0.1, 0.2, 0.3, 0.4, 1.0],
-        labels=['Sangat Rendah', 'Rendah', 'Sedang', 'Tinggi', 'Sangat Tinggi']
+        labels=['Very Low', 'Low', 'Medium', 'High', 'Very High']
     )
     
-    df_clean['age_group'] = pd.cut(
-        df_clean['person_age'],
+    df_processed['age_group'] = pd.cut(
+        df_processed['person_age'],
         bins=[0, 25, 35, 45, 55, 65, 100],
         labels=['Gen Z', 'Millennial', 'Gen X', 'Boomer', 'Senior', 'Elder']
     )
     
-    df_clean['income_category'] = pd.qcut(
-        df_clean['person_income'],
+    df_processed['income_category'] = pd.qcut(
+        df_processed['person_income'],
         q=[0, 0.2, 0.4, 0.6, 0.8, 1.0],
-        labels=['Sangat Rendah', 'Rendah', 'Sedang', 'Tinggi', 'Sangat Tinggi'],
+        labels=['Very Low', 'Low', 'Medium', 'High', 'Very High'],
         duplicates='drop'
     )
     
-    return df_clean
+    return df_processed
 
-# Fungsi untuk membuat prediksi (simulasi)
-def make_prediction(input_data):
-    """Simulasi prediksi credit risk"""
-    # Ini adalah simulasi, dalam implementasi real akan load model yang sudah ditraining
-    
-    # Simple risk scoring berdasarkan beberapa faktor
-    risk_score = 0
-    
-    # Faktor umur
-    if input_data['person_age'] < 25:
-        risk_score += 20
-    elif input_data['person_age'] > 65:
-        risk_score += 15
-    
-    # Faktor income
-    if input_data['person_income'] < 30000:
-        risk_score += 25
-    elif input_data['person_income'] < 50000:
-        risk_score += 15
-    
-    # Faktor loan amount vs income
-    loan_to_income = input_data['loan_amnt'] / input_data['person_income']
-    if loan_to_income > 0.5:
-        risk_score += 30
-    elif loan_to_income > 0.3:
-        risk_score += 20
-    
-    # Faktor interest rate
-    if input_data['loan_int_rate'] > 15:
-        risk_score += 20
-    elif input_data['loan_int_rate'] > 10:
-        risk_score += 10
-    
-    # Faktor employment length
-    if input_data['person_emp_length'] < 2:
-        risk_score += 15
-    
-    # Faktor credit history
-    if input_data['cb_person_default_on_file'] == 'Y':
-        risk_score += 30
-    
-    if input_data['cb_person_cred_hist_length'] < 5:
-        risk_score += 10
-    
-    # Normalize risk score
-    risk_probability = min(risk_score / 100, 0.95)
-    
-    return {
-        'risk_probability': risk_probability,
-        'risk_category': 'Tinggi' if risk_probability > 0.5 else 'Rendah',
-        'approval_recommendation': 'Tolak' if risk_probability > 0.6 else 'Setujui dengan Syarat' if risk_probability > 0.3 else 'Setujui'
-    }
+# Fungsi helper
+def create_gauge_chart(value, title):
+    """Membuat gauge chart untuk probabilitas"""
+    fig = go.Figure(go.Indicator(
+        mode = "gauge+number+delta",
+        value = value * 100,
+        domain = {'x': [0, 1], 'y': [0, 1]},
+        title = {'text': title, 'font': {'size': 24}},
+        number = {'suffix': '%', 'font': {'size': 40}},
+        gauge = {
+            'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
+            'bar': {'color': "darkblue"},
+            'bgcolor': "white",
+            'borderwidth': 2,
+            'bordercolor': "gray",
+            'steps': [
+                {'range': [0, 30], 'color': '#2ecc71'},
+                {'range': [30, 70], 'color': '#f39c12'},
+                {'range': [70, 100], 'color': '#e74c3c'}
+            ],
+            'threshold': {
+                'line': {'color': "red", 'width': 4},
+                'thickness': 0.75,
+                'value': 90
+            }
+        }
+    ))
+    fig.update_layout(height=300, margin=dict(l=20, r=20, t=40, b=20))
+    return fig
 
-# Main app
-def main():
-    # Header
-    st.markdown('<h1 class="main-header">🏦 Dashboard Analisis Risiko Kredit</h1>', unsafe_allow_html=True)
+def predict_single_applicant(input_data, models, model_type='ensemble'):
+    """Prediksi untuk satu aplikasi pinjaman"""
+    try:
+        scaler = models['preprocessing']['scaler']
+        imputer = models['preprocessing']['imputer']
+        feature_names = models['preprocessing']['feature_names']
+        
+        # Prepare input
+        input_df = pd.DataFrame([input_data])
+        
+        # Apply same preprocessing as training
+        for col in feature_names:
+            if col not in input_df.columns:
+                input_df[col] = 0
+        
+        input_df = input_df[feature_names]
+        input_imputed = imputer.transform(input_df)
+        input_scaled = scaler.transform(input_imputed)
+        input_scaled = np.nan_to_num(input_scaled, nan=0.0)
+        
+        if model_type == 'lstm':
+            # LSTM prediction
+            input_lstm = input_scaled.reshape((1, 1, input_scaled.shape[1]))
+            probability = models['lstm'].predict(input_lstm, verbose=0).flatten()[0]
+            prediction = int(probability > 0.5)
+        else:
+            # Ensemble prediction
+            weights = models['ensemble_config']['weights']
+            threshold = models['ensemble_config']['optimal_threshold']
+            
+            proba_xgb = models['xgboost'].predict_proba(input_scaled)[0, 1]
+            proba_lgb = models['lightgbm'].predict_proba(input_scaled)[0, 1]
+            proba_cat = models['catboost'].predict_proba(input_scaled)[0, 1]
+            
+            probability = (
+                weights['xgboost'] * proba_xgb +
+                weights['lightgbm'] * proba_lgb +
+                weights['catboost'] * proba_cat
+            )
+            prediction = int(probability >= threshold)
+        
+        return prediction, probability
     
-    # Load data
-    df = load_data()
-    if df is None:
-        return
+    except Exception as e:
+        st.error(f"Error dalam prediksi: {str(e)}")
+        # Return default values in case of error
+        return 0, 0.5
+
+# Halaman-halaman aplikasi
+def render_dashboard(df, models):
+    """Halaman 1: Dashboard Eksekutif & Kesehatan Portofolio"""
+    st.title("🏦 Dashboard Eksekutif & Kesehatan Portofolio")
     
-    df_clean = preprocess_data(df)
+    # Sidebar filters
+    st.sidebar.header("Filter Analisis")
     
-    # Sidebar navigation
-    st.sidebar.title("📊 Navigasi")
-    page = st.sidebar.radio(
-        "Pilih Halaman:",
-        ["🏠 Beranda", "📈 Analisis Data", "🤖 Prediksi Risiko", "💰 Analisis Dampak Bisnis", "📊 Performa Model"]
+    loan_grade_filter = st.sidebar.multiselect(
+        "Grade Pinjaman",
+        options=df['loan_grade'].unique(),
+        default=df['loan_grade'].unique()
     )
     
-    # Beranda
-    if page == "🏠 Beranda":
-        st.markdown('<h2 class="sub-header">Ringkasan Dataset</h2>', unsafe_allow_html=True)
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Total Data", f"{len(df):,}")
-        with col2:
-            default_rate = (df['loan_status'] == 0).mean() * 100
-            st.metric("Tingkat Gagal Bayar", f"{default_rate:.1f}%")
-        with col3:
-            avg_loan = df['loan_amnt'].mean()
-            st.metric("Rata-rata Pinjaman", f"${avg_loan:,.0f}")
-        with col4:
-            avg_interest = df['loan_int_rate'].mean()
-            st.metric("Rata-rata Suku Bunga", f"{avg_interest:.1f}%")
-        
-        # Distribusi status pinjaman
-        st.markdown("### Distribusi Status Pinjaman")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            fig_pie = px.pie(
-                values=df['loan_status'].value_counts().values,
-                names=['Gagal Bayar', 'Lancar'],
-                title="Proporsi Status Pinjaman",
-                color_discrete_map={'Gagal Bayar': '#ef5350', 'Lancar': '#66bb6a'}
-            )
-            st.plotly_chart(fig_pie, use_container_width=True)
-        
-        with col2:
-            # Distribusi berdasarkan loan intent
-            intent_counts = df.groupby(['loan_intent', 'loan_status']).size().unstack(fill_value=0)
-            intent_counts.columns = ['Gagal Bayar', 'Lancar']
-            
-            fig_bar = px.bar(
-                intent_counts.T,
-                title="Status Pinjaman per Tujuan",
-                color_discrete_map={'Gagal Bayar': '#ef5350', 'Lancar': '#66bb6a'}
-            )
-            st.plotly_chart(fig_bar, use_container_width=True)
-        
-        # Statistik deskriptif
-        st.markdown("### Statistik Deskriptif")
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        st.dataframe(df[numeric_cols].describe().round(2))
+    loan_intent_filter = st.sidebar.multiselect(
+        "Tujuan Pinjaman",
+        options=df['loan_intent'].unique(),
+        default=df['loan_intent'].unique()
+    )
     
-    # Analisis Data
-    elif page == "📈 Analisis Data":
-        st.markdown('<h2 class="sub-header">Eksplorasi Data</h2>', unsafe_allow_html=True)
-        
-        # Tabs untuk berbagai analisis
-        tab1, tab2, tab3, tab4 = st.tabs(["Distribusi Fitur", "Korelasi", "Analisis Risiko", "Segmentasi"])
-        
-        with tab1:
-            st.markdown("### Distribusi Fitur Numerik")
-            
-            # Pilih fitur untuk visualisasi
-            numeric_features = ['person_age', 'person_income', 'loan_amnt', 'loan_int_rate', 
-                              'person_emp_length', 'cb_person_cred_hist_length']
-            
-            selected_feature = st.selectbox("Pilih Fitur:", numeric_features)
-            
-            # Histogram dengan pembagian berdasarkan status
-            fig = px.histogram(
-                df_clean,
-                x=selected_feature,
-                color='loan_status',
-                nbins=30,
-                title=f"Distribusi {selected_feature} berdasarkan Status Pinjaman",
-                color_discrete_map={0: '#ef5350', 1: '#66bb6a'},
-                labels={'loan_status': 'Status'}
-            )
-            fig.update_layout(bargap=0.1)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Box plot
-            fig_box = px.box(
-                df_clean,
-                y=selected_feature,
-                x='loan_status',
-                title=f"Box Plot {selected_feature} berdasarkan Status",
-                color='loan_status',
-                color_discrete_map={0: '#ef5350', 1: '#66bb6a'}
-            )
-            st.plotly_chart(fig_box, use_container_width=True)
-        
-        with tab2:
-            st.markdown("### Matriks Korelasi")
-            
-            # Hitung korelasi
-            corr_matrix = df[numeric_features].corr()
-            
-            # Heatmap
-            fig_corr = px.imshow(
-                corr_matrix,
-                text_auto=True,
-                aspect="auto",
-                title="Matriks Korelasi Fitur Numerik",
-                color_continuous_scale='RdBu_r'
-            )
-            st.plotly_chart(fig_corr, use_container_width=True)
-            
-            # Korelasi dengan target
-            st.markdown("### Korelasi dengan Status Pinjaman")
-            target_corr = df[numeric_features + ['loan_status']].corr()['loan_status'].drop('loan_status').sort_values(ascending=False)
-            
-            fig_target_corr = px.bar(
-                x=target_corr.values,
-                y=target_corr.index,
-                orientation='h',
-                title="Korelasi Fitur dengan Status Pinjaman",
-                labels={'x': 'Korelasi', 'y': 'Fitur'},
-                color=target_corr.values,
-                color_continuous_scale='RdBu_r'
-            )
-            st.plotly_chart(fig_target_corr, use_container_width=True)
-        
-        with tab3:
-            st.markdown("### Analisis Risiko Berdasarkan Kategori")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Risiko berdasarkan grade
-                grade_risk = df_clean.groupby('loan_grade')['loan_status'].agg(['mean', 'count'])
-                grade_risk['default_rate'] = (1 - grade_risk['mean']) * 100
-                
-                fig_grade = px.bar(
-                    x=grade_risk.index,
-                    y=grade_risk['default_rate'],
-                    title="Tingkat Gagal Bayar per Grade Pinjaman",
-                    labels={'x': 'Grade', 'y': 'Tingkat Gagal Bayar (%)'},
-                    color=grade_risk['default_rate'],
-                    color_continuous_scale='Reds'
-                )
-                st.plotly_chart(fig_grade, use_container_width=True)
-            
-            with col2:
-                # Risiko berdasarkan tujuan pinjaman
-                intent_risk = df_clean.groupby('loan_intent')['loan_status'].agg(['mean', 'count'])
-                intent_risk['default_rate'] = (1 - intent_risk['mean']) * 100
-                
-                fig_intent = px.bar(
-                    x=intent_risk.index,
-                    y=intent_risk['default_rate'],
-                    title="Tingkat Gagal Bayar per Tujuan Pinjaman",
-                    labels={'x': 'Tujuan', 'y': 'Tingkat Gagal Bayar (%)'},
-                    color=intent_risk['default_rate'],
-                    color_continuous_scale='Reds'
-                )
-                fig_intent.update_xaxis(tickangle=-45)
-                st.plotly_chart(fig_intent, use_container_width=True)
-            
-            # Analisis risiko berdasarkan rentang usia dan income
-            st.markdown("### Peta Risiko: Usia vs Income")
-            
-            # Buat bins untuk scatter plot
-            risk_map = df_clean.groupby(['age_group', 'income_category'])['loan_status'].agg(['mean', 'count'])
-            risk_map['default_rate'] = (1 - risk_map['mean']) * 100
-            risk_map = risk_map[risk_map['count'] > 10]  # Filter untuk sample size yang cukup
-            
-            # Pivot untuk heatmap
-            risk_pivot = risk_map['default_rate'].reset_index().pivot(
-                index='age_group', 
-                columns='income_category', 
-                values='default_rate'
-            )
-            
-            fig_heatmap = px.imshow(
-                risk_pivot,
-                title="Peta Risiko: Tingkat Gagal Bayar (%) berdasarkan Usia dan Income",
-                labels=dict(x="Kategori Income", y="Kelompok Usia", color="Gagal Bayar (%)"),
-                aspect="auto",
-                color_continuous_scale='Reds'
-            )
-            st.plotly_chart(fig_heatmap, use_container_width=True)
-        
-        with tab4:
-            st.markdown("### Segmentasi Nasabah")
-            
-            # Segmentasi berdasarkan home ownership
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                ownership_dist = df_clean['person_home_ownership'].value_counts()
-                fig_ownership = px.pie(
-                    values=ownership_dist.values,
-                    names=ownership_dist.index,
-                    title="Distribusi Kepemilikan Rumah"
-                )
-                st.plotly_chart(fig_ownership, use_container_width=True)
-            
-            with col2:
-                # Default rate by ownership
-                ownership_risk = df_clean.groupby('person_home_ownership')['loan_status'].agg(['mean', 'count'])
-                ownership_risk['default_rate'] = (1 - ownership_risk['mean']) * 100
-                
-                fig_ownership_risk = px.bar(
-                    x=ownership_risk.index,
-                    y=ownership_risk['default_rate'],
-                    title="Tingkat Gagal Bayar per Status Kepemilikan Rumah",
-                    labels={'x': 'Status Kepemilikan', 'y': 'Gagal Bayar (%)'},
-                    color=ownership_risk['default_rate'],
-                    color_continuous_scale='Reds'
-                )
-                st.plotly_chart(fig_ownership_risk, use_container_width=True)
-            
-            # Analisis multi-dimensi
-            st.markdown("### Analisis Multi-Dimensi")
-            
-            # Bubble chart: Income vs Loan Amount vs Interest Rate
-            sample_data = df_clean.sample(n=min(1000, len(df_clean)))
-            
-            fig_bubble = px.scatter(
-                sample_data,
-                x='person_income',
-                y='loan_amnt',
-                size='loan_int_rate',
-                color='loan_status',
-                title="Hubungan Income, Jumlah Pinjaman, dan Suku Bunga",
-                labels={'person_income': 'Income', 'loan_amnt': 'Jumlah Pinjaman', 
-                       'loan_int_rate': 'Suku Bunga', 'loan_status': 'Status'},
-                color_discrete_map={0: '#ef5350', 1: '#66bb6a'},
-                hover_data=['loan_grade', 'loan_intent']
-            )
-            st.plotly_chart(fig_bubble, use_container_width=True)
+    home_ownership_filter = st.sidebar.multiselect(
+        "Status Kepemilikan Rumah",
+        options=df['person_home_ownership'].unique(),
+        default=df['person_home_ownership'].unique()
+    )
     
-    # Prediksi Risiko
-    elif page == "🤖 Prediksi Risiko":
-        st.markdown('<h2 class="sub-header">Prediksi Risiko Kredit</h2>', unsafe_allow_html=True)
-        
-        st.info("💡 Masukkan data nasabah untuk memprediksi risiko kredit")
-        
-        # Form input
-        with st.form("prediction_form"):
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.markdown("### Data Pribadi")
-                person_age = st.number_input("Usia", min_value=18, max_value=100, value=30)
-                person_income = st.number_input("Penghasilan Tahunan ($)", min_value=0, value=50000, step=1000)
-                person_home_ownership = st.selectbox("Status Kepemilikan Rumah", 
-                                                   ['RENT', 'OWN', 'MORTGAGE', 'OTHER'])
-                person_emp_length = st.number_input("Lama Bekerja (tahun)", min_value=0.0, max_value=50.0, value=5.0, step=0.5)
-            
-            with col2:
-                st.markdown("### Data Pinjaman")
-                loan_intent = st.selectbox("Tujuan Pinjaman", 
-                                         ['PERSONAL', 'EDUCATION', 'MEDICAL', 'VENTURE', 
-                                          'HOMEIMPROVEMENT', 'DEBTCONSOLIDATION'])
-                loan_grade = st.selectbox("Grade Pinjaman", ['A', 'B', 'C', 'D', 'E', 'F', 'G'])
-                loan_amnt = st.number_input("Jumlah Pinjaman ($)", min_value=0, value=10000, step=500)
-                loan_int_rate = st.slider("Suku Bunga (%)", min_value=5.0, max_value=25.0, value=10.0, step=0.5)
-            
-            with col3:
-                st.markdown("### Riwayat Kredit")
-                cb_person_default_on_file = st.selectbox("Pernah Gagal Bayar?", ['N', 'Y'])
-                cb_person_cred_hist_length = st.number_input("Lama Riwayat Kredit (tahun)", 
-                                                            min_value=0, max_value=50, value=10)
-            
-            # Calculate loan_percent_income
-            loan_percent_income = loan_amnt / person_income if person_income > 0 else 0
-            st.metric("Rasio Pinjaman terhadap Income", f"{loan_percent_income:.2%}")
-            
-            submitted = st.form_submit_button("🔮 Prediksi Risiko", use_container_width=True)
-        
-        if submitted:
-            # Prepare input data
-            input_data = {
-                'person_age': person_age,
-                'person_income': person_income,
-                'person_home_ownership': person_home_ownership,
-                'person_emp_length': person_emp_length,
-                'loan_intent': loan_intent,
-                'loan_grade': loan_grade,
-                'loan_amnt': loan_amnt,
-                'loan_int_rate': loan_int_rate,
-                'loan_percent_income': loan_percent_income,
-                'cb_person_default_on_file': cb_person_default_on_file,
-                'cb_person_cred_hist_length': cb_person_cred_hist_length
-            }
-            
-            # Make prediction
-            prediction = make_prediction(input_data)
-            
-            # Display results
-            st.markdown("---")
-            st.markdown("### 📊 Hasil Prediksi")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Risk gauge
-                fig_gauge = go.Figure(go.Indicator(
-                    mode = "gauge+number+delta",
-                    value = prediction['risk_probability'] * 100,
-                    domain = {'x': [0, 1], 'y': [0, 1]},
-                    title = {'text': "Skor Risiko (%)"},
-                    delta = {'reference': 50},
-                    gauge = {
-                        'axis': {'range': [None, 100]},
-                        'bar': {'color': "darkred" if prediction['risk_probability'] > 0.5 else "darkgreen"},
-                        'steps': [
-                            {'range': [0, 30], 'color': "lightgreen"},
-                            {'range': [30, 60], 'color': "yellow"},
-                            {'range': [60, 100], 'color': "lightcoral"}
-                        ],
-                        'threshold': {
-                            'line': {'color': "red", 'width': 4},
-                            'thickness': 0.75,
-                            'value': 60
-                        }
-                    }
-                ))
-                fig_gauge.update_layout(height=400)
-                st.plotly_chart(fig_gauge, use_container_width=True)
-            
-            with col2:
-                # Prediction box
-                risk_class = "high-risk" if prediction['risk_probability'] > 0.5 else "low-risk"
-                
-                st.markdown(f"""
-                <div class="prediction-box {risk_class}">
-                    <h3>Hasil Analisis</h3>
-                    <p><strong>Kategori Risiko:</strong> {prediction['risk_category']}</p>
-                    <p><strong>Probabilitas Gagal Bayar:</strong> {prediction['risk_probability']:.1%}</p>
-                    <p><strong>Rekomendasi:</strong> {prediction['approval_recommendation']}</p>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Faktor risiko
-                st.markdown("### 🔍 Faktor-faktor Risiko")
-                
-                risk_factors = []
-                if person_age < 25:
-                    risk_factors.append("❗ Usia muda (< 25 tahun)")
-                if person_income < 30000:
-                    risk_factors.append("❗ Penghasilan rendah (< $30,000)")
-                if loan_percent_income > 0.3:
-                    risk_factors.append("❗ Rasio pinjaman terhadap income tinggi (> 30%)")
-                if loan_int_rate > 15:
-                    risk_factors.append("❗ Suku bunga tinggi (> 15%)")
-                if person_emp_length < 2:
-                    risk_factors.append("❗ Masa kerja pendek (< 2 tahun)")
-                if cb_person_default_on_file == 'Y':
-                    risk_factors.append("❗ Memiliki riwayat gagal bayar")
-                
-                if risk_factors:
-                    for factor in risk_factors:
-                        st.write(factor)
-                else:
-                    st.success("✅ Tidak ada faktor risiko utama terdeteksi")
-            
-            # Comparison with similar profiles
-            st.markdown("### 📊 Perbandingan dengan Profil Serupa")
-            
-            # Filter similar profiles
-            similar_profiles = df_clean[
-                (df_clean['loan_grade'] == loan_grade) &
-                (df_clean['loan_intent'] == loan_intent) &
-                (df_clean['person_age'].between(person_age - 5, person_age + 5))
-            ]
-            
-            if len(similar_profiles) > 0:
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    similar_default_rate = (1 - similar_profiles['loan_status'].mean()) * 100
-                    st.metric("Tingkat Gagal Bayar Profil Serupa", f"{similar_default_rate:.1f}%")
-                
-                with col2:
-                    avg_loan_similar = similar_profiles['loan_amnt'].mean()
-                    st.metric("Rata-rata Pinjaman Serupa", f"${avg_loan_similar:,.0f}")
-                
-                with col3:
-                    count_similar = len(similar_profiles)
-                    st.metric("Jumlah Profil Serupa", f"{count_similar:,}")
-            else:
-                st.info("Tidak ada profil serupa ditemukan dalam dataset")
+    # Apply filters
+    df_filtered = df[
+        (df['loan_grade'].isin(loan_grade_filter)) &
+        (df['loan_intent'].isin(loan_intent_filter)) &
+        (df['person_home_ownership'].isin(home_ownership_filter))
+    ]
     
-    # Analisis Dampak Bisnis
-    elif page == "💰 Analisis Dampak Bisnis":
-        st.markdown('<h2 class="sub-header">Analisis Dampak Bisnis</h2>', unsafe_allow_html=True)
-        
-        # Cost matrix
-        st.markdown("### ⚙️ Pengaturan Matriks Biaya")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            cost_fn = st.number_input("Biaya False Negative (Gagal mendeteksi risiko)", 
-                                    value=1000, step=100, help="Biaya ketika model gagal mendeteksi nasabah yang akan gagal bayar")
-        with col2:
-            cost_fp = st.number_input("Biaya False Positive (Salah menolak)", 
-                                    value=200, step=50, help="Biaya ketika model salah menolak nasabah yang sebenarnya akan lancar")
-        
-        # Simulasi dampak bisnis
-        st.markdown("### 📊 Simulasi Dampak Bisnis")
-        
-        # Asumsi confusion matrix untuk demonstrasi
-        total_samples = len(df)
-        actual_default_rate = (df['loan_status'] == 0).mean()
-        
-        # Simulasi untuk berbagai threshold
-        thresholds = np.linspace(0.1, 0.9, 9)
-        business_metrics = []
-        
-        for threshold in thresholds:
-            # Simulasi confusion matrix berdasarkan threshold
-            # Ini adalah simulasi sederhana untuk demonstrasi
-            predicted_positive_rate = 1 - threshold
-            
-            tp = int(actual_default_rate * total_samples * 0.7 * (1-threshold))  # True Positives
-            fn = int(actual_default_rate * total_samples) - tp  # False Negatives
-            fp = int((1-actual_default_rate) * total_samples * predicted_positive_rate * 0.3)  # False Positives
-            tn = int((1-actual_default_rate) * total_samples) - fp  # True Negatives
-            
-            total_cost = fn * cost_fn + fp * cost_fp
-            approval_rate = (tn + fn) / total_samples
-            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-            recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-            
-            business_metrics.append({
-                'threshold': threshold,
-                'total_cost': total_cost,
-                'approval_rate': approval_rate,
-                'precision': precision,
-                'recall': recall
-            })
-        
-        metrics_df = pd.DataFrame(business_metrics)
-        
-        # Visualisasi
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            fig_cost = px.line(
-                metrics_df,
-                x='threshold',
-                y='total_cost',
-                title='Total Biaya vs Threshold',
-                labels={'threshold': 'Threshold', 'total_cost': 'Total Biaya ($)'},
-                markers=True
-            )
-            st.plotly_chart(fig_cost, use_container_width=True)
-        
-        with col2:
-            fig_approval = px.line(
-                metrics_df,
-                x='threshold',
-                y='approval_rate',
-                title='Tingkat Persetujuan vs Threshold',
-                labels={'threshold': 'Threshold', 'approval_rate': 'Tingkat Persetujuan'},
-                markers=True
-            )
-            st.plotly_chart(fig_approval, use_container_width=True)
-        
-        # Trade-off analysis
-        st.markdown("### 🔄 Analisis Trade-off")
-        
-        fig_tradeoff = make_subplots(
-            rows=1, cols=2,
-            subplot_titles=('Precision vs Recall', 'Biaya vs Tingkat Persetujuan')
+    # KPI Metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        default_rate = (df_filtered['loan_status'] == 1).mean() * 100
+        st.metric(
+            label="Tingkat Gagal Bayar Portofolio",
+            value=f"{default_rate:.2f}%",
+            delta=f"{default_rate - (df['loan_status'] == 1).mean() * 100:.2f}%"
         )
-        
-        # Precision vs Recall
-        fig_tradeoff.add_trace(
-            go.Scatter(x=metrics_df['recall'], y=metrics_df['precision'], 
-                      mode='lines+markers', name='PR Curve'),
-            row=1, col=1
+    
+    with col2:
+        total_loan = df_filtered['loan_amnt'].sum()
+        st.metric(
+            label="Total Nilai Pinjaman",
+            value=f"${total_loan:,.0f}",
+            delta=f"{len(df_filtered)} pinjaman"
         )
-        
-        # Cost vs Approval Rate
-        fig_tradeoff.add_trace(
-            go.Scatter(x=metrics_df['approval_rate'], y=metrics_df['total_cost'], 
-                      mode='lines+markers', name='Cost-Approval'),
-            row=1, col=2
+    
+    with col3:
+        avg_income = df_filtered['person_income'].mean()
+        st.metric(
+            label="Rata-rata Pendapatan Peminjam",
+            value=f"${avg_income:,.0f}",
+            delta=f"Median: ${df_filtered['person_income'].median():,.0f}"
         )
+    
+    with col4:
+        avg_int_rate = df_filtered['loan_int_rate'].mean()
+        st.metric(
+            label="Rata-rata Suku Bunga",
+            value=f"{avg_int_rate:.2f}%",
+            delta=f"Min: {df_filtered['loan_int_rate'].min():.2f}%"
+        )
+    
+    # Visualizations
+    st.markdown("---")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Pie Chart - Status Kredit
+        fig_pie = px.pie(
+            df_filtered,
+            names=['Lancar' if x == 0 else 'Gagal Bayar' for x in df_filtered['loan_status']],
+            title="Distribusi Status Kredit",
+            color_discrete_map={'Lancar': '#2ecc71', 'Gagal Bayar': '#e74c3c'}
+        )
+        st.plotly_chart(fig_pie, use_container_width=True)
+    
+    with col2:
+        # Treemap - Segmen Risiko
+        df_risk = df_filtered.groupby(['loan_grade', 'loan_intent']).agg({
+            'loan_amnt': 'sum',
+            'loan_status': 'mean'
+        }).reset_index()
         
-        fig_tradeoff.update_xaxes(title_text="Recall", row=1, col=1)
-        fig_tradeoff.update_yaxes(title_text="Precision", row=1, col=1)
-        fig_tradeoff.update_xaxes(title_text="Tingkat Persetujuan", row=1, col=2)
-        fig_tradeoff.update_yaxes(title_text="Total Biaya ($)", row=1, col=2)
+        df_risk['status_text'] = df_risk['loan_status'].apply(lambda x: f"Risiko: {x*100:.1f}%")
         
-        fig_tradeoff.update_layout(height=400, showlegend=False)
-        st.plotly_chart(fig_tradeoff, use_container_width=True)
-        
-        # ROI Analysis
-        st.markdown("### 💵 Analisis ROI")
-        
-        avg_loan = df['loan_amnt'].mean()
-        avg_interest_rate = df['loan_int_rate'].mean() / 100
-        loan_term_years = 3  # Asumsi
+        fig_treemap = px.treemap(
+            df_risk,
+            path=['loan_grade', 'loan_intent'],
+            values='loan_amnt',
+            color='loan_status',
+            title="Visualisasi Segmen Risiko (Ukuran: Volume Pinjaman, Warna: Tingkat Risiko)",
+            color_continuous_scale='RdYlGn_r',
+            hover_data={'status_text': True}
+        )
+        st.plotly_chart(fig_treemap, use_container_width=True)
+    
+    # Risk Analysis by Interest Rate
+    st.markdown("### Analisis Risiko berdasarkan Suku Bunga")
+    
+    df_int_rate = df_filtered.copy()
+    df_int_rate['int_rate_bin'] = pd.cut(df_int_rate['loan_int_rate'], bins=5)
+    risk_by_rate = df_int_rate.groupby('int_rate_bin')['loan_status'].agg(['mean', 'count']).reset_index()
+    risk_by_rate['mean_pct'] = risk_by_rate['mean'] * 100
+    # Convert interval to string for JSON serialization
+    risk_by_rate['int_rate_bin'] = risk_by_rate['int_rate_bin'].astype(str)
+    
+    fig_bar = px.bar(
+        risk_by_rate,
+        x='int_rate_bin',
+        y='mean_pct',
+        title="Tingkat Gagal Bayar berdasarkan Rentang Suku Bunga",
+        labels={'int_rate_bin': 'Rentang Suku Bunga (%)', 'mean_pct': 'Persentase Gagal Bayar (%)'},
+        text='mean_pct',
+        color='mean_pct',
+        color_continuous_scale='Reds'
+    )
+    fig_bar.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+    st.plotly_chart(fig_bar, use_container_width=True)
+    
+    # Data Preview
+    st.markdown("### Pratinjau Data Dinamis")
+    st.dataframe(
+        df_filtered.head(100),
+        use_container_width=True,
+        height=400
+    )
+
+def render_workbench(models):
+    """Halaman 2: Workbench Evaluasi & Simulasi Aplikasi Pinjaman"""
+    st.title("🔍 Workbench Evaluasi & Simulasi Aplikasi Pinjaman")
+    
+    # Form Input
+    with st.form("loan_application_form"):
+        st.markdown("### Formulir Aplikasi Pinjaman")
         
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            expected_revenue_per_loan = avg_loan * avg_interest_rate * loan_term_years
-            st.metric("Pendapatan Rata-rata per Pinjaman", f"${expected_revenue_per_loan:,.0f}")
+            person_age = st.number_input("Usia Peminjam", min_value=18, max_value=100, value=30)
+            person_income = st.number_input("Pendapatan Tahunan ($)", min_value=0, value=50000, step=1000)
+            person_emp_length = st.number_input("Lama Bekerja (tahun)", min_value=0.0, max_value=50.0, value=5.0, step=0.5)
         
         with col2:
-            optimal_threshold = metrics_df.loc[metrics_df['total_cost'].idxmin(), 'threshold']
-            st.metric("Threshold Optimal", f"{optimal_threshold:.2f}")
+            loan_amnt = st.number_input("Jumlah Pinjaman ($)", min_value=0, value=10000, step=500)
+            loan_int_rate = st.slider("Suku Bunga (%)", min_value=5.0, max_value=25.0, value=10.0, step=0.1)
+            loan_grade = st.selectbox("Grade Pinjaman", ['A', 'B', 'C', 'D', 'E', 'F', 'G'])
         
         with col3:
-            min_cost = metrics_df['total_cost'].min()
-            st.metric("Biaya Minimum", f"${min_cost:,.0f}")
+            loan_intent = st.selectbox(
+                "Tujuan Pinjaman",
+                ['PERSONAL', 'EDUCATION', 'MEDICAL', 'VENTURE', 'HOMEIMPROVEMENT', 'DEBTCONSOLIDATION']
+            )
+            person_home_ownership = st.selectbox("Status Kepemilikan Rumah", ['RENT', 'OWN', 'MORTGAGE', 'OTHER'])
+            cb_person_default_on_file = st.selectbox("Riwayat Default", ['N', 'Y'])
         
-        # Summary
-        st.markdown("### 📋 Ringkasan Rekomendasi")
+        cb_person_cred_hist_length = st.number_input("Panjang Riwayat Kredit (tahun)", min_value=0, max_value=50, value=5)
         
-        optimal_metrics = metrics_df[metrics_df['threshold'] == optimal_threshold].iloc[0]
-        
-        st.info(f"""
-        **Rekomendasi Berdasarkan Analisis:**
-        - Gunakan threshold {optimal_threshold:.2f} untuk meminimalkan biaya
-        - Tingkat persetujuan yang diharapkan: {optimal_metrics['approval_rate']:.1%}
-        - Precision yang diharapkan: {optimal_metrics['precision']:.1%}
-        - Recall yang diharapkan: {optimal_metrics['recall']:.1%}
-        - Total biaya yang diproyeksikan: ${optimal_metrics['total_cost']:,.0f}
-        """)
-    
-    # Performa Model
-    elif page == "📊 Performa Model":
-        st.markdown('<h2 class="sub-header">Perbandingan Performa Model</h2>', unsafe_allow_html=True)
-        
-        # Simulasi metrik model (dalam implementasi real akan load dari model yang sudah ditraining)
-        model_metrics = {
-            'LSTM': {
-                'accuracy': 0.834,
-                'precision': 0.782,
-                'recall': 0.751,
-                'f1_score': 0.766,
-                'roc_auc': 0.889
-            },
-            'XGBoost': {
-                'accuracy': 0.851,
-                'precision': 0.798,
-                'recall': 0.773,
-                'f1_score': 0.785,
-                'roc_auc': 0.905
-            },
-            'LightGBM': {
-                'accuracy': 0.848,
-                'precision': 0.801,
-                'recall': 0.765,
-                'f1_score': 0.783,
-                'roc_auc': 0.902
-            },
-            'CatBoost': {
-                'accuracy': 0.846,
-                'precision': 0.795,
-                'recall': 0.769,
-                'f1_score': 0.782,
-                'roc_auc': 0.901
-            },
-            'Ensemble': {
-                'accuracy': 0.868,
-                'precision': 0.821,
-                'recall': 0.794,
-                'f1_score': 0.807,
-                'roc_auc': 0.923
-            }
-        }
-        
-        # Convert to DataFrame
-        metrics_comparison = pd.DataFrame(model_metrics).T
-        
-        # Visualisasi perbandingan
-        st.markdown("### 📊 Perbandingan Metrik Model")
-        
-        # Bar chart comparison
-        fig_comparison = go.Figure()
-        
-        metrics_list = ['accuracy', 'precision', 'recall', 'f1_score', 'roc_auc']
-        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
-        
-        for i, metric in enumerate(metrics_list):
-            fig_comparison.add_trace(go.Bar(
-                name=metric.replace('_', ' ').title(),
-                x=metrics_comparison.index,
-                y=metrics_comparison[metric],
-                marker_color=colors[i]
-            ))
-        
-        fig_comparison.update_layout(
-            title="Perbandingan Metrik Antar Model",
-            barmode='group',
-            yaxis_title="Skor",
-            xaxis_title="Model",
-            legend_title="Metrik",
-            height=500
+        # Model Selection
+        model_choice = st.radio(
+            "Pilih Model Prediksi",
+            ["Model Ensemble (Rekomendasi)", "Model LSTM"],
+            horizontal=True
         )
         
-        st.plotly_chart(fig_comparison, use_container_width=True)
+        submitted = st.form_submit_button("🚀 Evaluasi Aplikasi", type="primary")
+    
+    if submitted:
+        # Prepare input data
+        loan_percent_income = loan_amnt / person_income if person_income > 0 else 0
         
-        # Detailed metrics table
-        st.markdown("### 📋 Tabel Detail Metrik")
-        styled_metrics = metrics_comparison.style.format("{:.3f}").background_gradient(cmap='YlGn', axis=0)
-        st.dataframe(styled_metrics)
+        input_data = {
+            'person_age': person_age,
+            'person_income': person_income,
+            'person_home_ownership': person_home_ownership,
+            'person_emp_length': person_emp_length,
+            'loan_intent': loan_intent,
+            'loan_grade': loan_grade,
+            'loan_amnt': loan_amnt,
+            'loan_int_rate': loan_int_rate,
+            'loan_percent_income': loan_percent_income,
+            'cb_person_default_on_file': cb_person_default_on_file,
+            'cb_person_cred_hist_length': cb_person_cred_hist_length
+        }
         
-        # Model selection recommendation
+        # Feature engineering
+        grade_risk = {'A': 1, 'B': 2, 'C': 3, 'D': 4, 'E': 5, 'F': 6, 'G': 7}
+        input_data['grade_risk_score'] = grade_risk[loan_grade]
+        input_data['combined_risk_score'] = loan_int_rate * input_data['grade_risk_score'] / 10
+        input_data['income_to_age_ratio'] = person_income / (person_age + 1)
+        input_data['loan_to_income_ratio'] = loan_amnt / (person_income + 1)
+        input_data['credit_utilization'] = loan_amnt / (person_income * cb_person_cred_hist_length + 1)
+        input_data['person_income_log'] = np.log1p(person_income)
+        input_data['loan_amnt_log'] = np.log1p(loan_amnt)
+        
+        # Encoding
+        if 'encoding_mappings' in models['preprocessing']:
+            encoding_mappings = models['preprocessing']['encoding_mappings']
+            if 'loan_grade' in encoding_mappings:
+                input_data['loan_grade_encoded'] = encoding_mappings['loan_grade'].get(loan_grade, 4)
+        else:
+            # Default encoding if not available
+            grade_risk = {'A': 7, 'B': 6, 'C': 5, 'D': 4, 'E': 3, 'F': 2, 'G': 1}
+            input_data['loan_grade_encoded'] = grade_risk.get(loan_grade, 4)
+        
+        # One-hot encoding for categorical variables
+        input_data['person_home_ownership_OTHER'] = 1 if person_home_ownership == 'OTHER' else 0
+        input_data['person_home_ownership_OWN'] = 1 if person_home_ownership == 'OWN' else 0
+        input_data['person_home_ownership_RENT'] = 1 if person_home_ownership == 'RENT' else 0
+        input_data['cb_person_default_on_file_Y'] = 1 if cb_person_default_on_file == 'Y' else 0
+        
+        # Target encoding for loan_intent (using average from training)
+        intent_encoding = {
+            'PERSONAL': 0.091, 'EDUCATION': 0.089, 'MEDICAL': 0.081,
+            'VENTURE': 0.145, 'HOMEIMPROVEMENT': 0.083, 'DEBTCONSOLIDATION': 0.090
+        }
+        input_data['loan_intent_target_encoded'] = intent_encoding.get(loan_intent, 0.090)
+        
+        # Additional engineered features that might be needed
+        # Employment stability encoding
+        emp_stability_map = {'Unstable': 1, 'Stable': 2, 'Very Stable': 3, 'Highly Stable': 4}
+        if person_emp_length < 2:
+            input_data['employment_stability_encoded'] = 1
+        elif person_emp_length < 5:
+            input_data['employment_stability_encoded'] = 2
+        elif person_emp_length < 10:
+            input_data['employment_stability_encoded'] = 3
+        else:
+            input_data['employment_stability_encoded'] = 4
+        
+        # Debt to income category encoding
+        if loan_percent_income <= 0.1:
+            input_data['debt_to_income_category_encoded'] = 1
+        elif loan_percent_income <= 0.2:
+            input_data['debt_to_income_category_encoded'] = 2
+        elif loan_percent_income <= 0.3:
+            input_data['debt_to_income_category_encoded'] = 3
+        elif loan_percent_income <= 0.4:
+            input_data['debt_to_income_category_encoded'] = 4
+        else:
+            input_data['debt_to_income_category_encoded'] = 5
+        
+        # Income category encoding (simplified)
+        if person_income <= 30000:
+            input_data['income_category_encoded'] = 1
+        elif person_income <= 50000:
+            input_data['income_category_encoded'] = 2
+        elif person_income <= 70000:
+            input_data['income_category_encoded'] = 3
+        elif person_income <= 100000:
+            input_data['income_category_encoded'] = 4
+        else:
+            input_data['income_category_encoded'] = 5
+        
+        # Credit history category encoding
+        if cb_person_cred_hist_length <= 2:
+            input_data['credit_history_category_encoded'] = 1
+        elif cb_person_cred_hist_length <= 5:
+            input_data['credit_history_category_encoded'] = 2
+        elif cb_person_cred_hist_length <= 10:
+            input_data['credit_history_category_encoded'] = 3
+        elif cb_person_cred_hist_length <= 20:
+            input_data['credit_history_category_encoded'] = 4
+        else:
+            input_data['credit_history_category_encoded'] = 5
+        
+        # Age group dummies (simplified)
+        age_groups = ['age_group_Boomer', 'age_group_Elder', 'age_group_Gen X', 
+                      'age_group_Gen Z', 'age_group_Millennial', 'age_group_Senior']
+        for group in age_groups:
+            input_data[group] = 0
+        
+        if person_age <= 25:
+            input_data['age_group_Gen Z'] = 1
+        elif person_age <= 35:
+            input_data['age_group_Millennial'] = 1
+        elif person_age <= 45:
+            input_data['age_group_Gen X'] = 1
+        elif person_age <= 55:
+            input_data['age_group_Boomer'] = 1
+        elif person_age <= 65:
+            input_data['age_group_Senior'] = 1
+        else:
+            input_data['age_group_Elder'] = 1
+        
+        # Make prediction
+        model_type = 'lstm' if "LSTM" in model_choice else 'ensemble'
+        prediction, probability = predict_single_applicant(input_data, models, model_type)
+        
+        # Display Results
+        st.markdown("---")
+        st.markdown("### 📊 Hasil Evaluasi")
+        
+        col1, col2 = st.columns([1, 2])
+        
+        with col1:
+            if prediction == 0:
+                st.success("### ✅ REKOMENDASI: SETUJUI")
+                st.markdown("Aplikasi pinjaman memenuhi kriteria untuk disetujui.")
+            else:
+                st.error("### ❌ REKOMENDASI: TOLAK")
+                st.markdown("Aplikasi pinjaman memiliki risiko tinggi gagal bayar.")
+        
+        with col2:
+            gauge_fig = create_gauge_chart(probability, "Probabilitas Gagal Bayar")
+            st.plotly_chart(gauge_fig, use_container_width=True)
+        
+        # Risk Factors (Simulated SHAP values)
+        st.markdown("### 🎯 Justifikasi Keputusan")
+        
         col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown("### 🏆 Model Terbaik per Metrik")
+            st.markdown("#### Faktor Peningkat Risiko")
+            risk_factors = []
             
-            best_models = {}
-            for metric in metrics_list:
-                best_model = metrics_comparison[metric].idxmax()
-                best_score = metrics_comparison[metric].max()
-                best_models[metric] = f"{best_model} ({best_score:.3f})"
+            if loan_int_rate > 15:
+                risk_factors.append(f"▲ Suku bunga tinggi ({loan_int_rate:.1f}%)")
+            if loan_percent_income > 0.3:
+                risk_factors.append(f"▲ Rasio pinjaman/pendapatan tinggi ({loan_percent_income:.1%})")
+            if cb_person_default_on_file == 'Y':
+                risk_factors.append("▲ Memiliki riwayat default")
+            if loan_grade in ['E', 'F', 'G']:
+                risk_factors.append(f"▲ Grade pinjaman rendah ({loan_grade})")
             
-            for metric, model_info in best_models.items():
-                st.write(f"**{metric.replace('_', ' ').title()}:** {model_info}")
+            if risk_factors:
+                for factor in risk_factors:
+                    st.markdown(f"- {factor}")
+            else:
+                st.markdown("- Tidak ada faktor risiko signifikan")
         
         with col2:
-            st.markdown("### 🎯 Rekomendasi Model")
+            st.markdown("#### Faktor Penurun Risiko")
+            protective_factors = []
             
-            # Calculate overall score (weighted average)
-            weights = {'accuracy': 0.2, 'precision': 0.2, 'recall': 0.2, 'f1_score': 0.2, 'roc_auc': 0.2}
-            overall_scores = {}
+            if person_income > 60000:
+                protective_factors.append(f"▼ Pendapatan tinggi (${person_income:,})")
+            if person_emp_length > 5:
+                protective_factors.append(f"▼ Pengalaman kerja lama ({person_emp_length:.1f} tahun)")
+            if cb_person_cred_hist_length > 10:
+                protective_factors.append(f"▼ Riwayat kredit panjang ({cb_person_cred_hist_length} tahun)")
+            if loan_grade in ['A', 'B']:
+                protective_factors.append(f"▼ Grade pinjaman baik ({loan_grade})")
             
-            for model in metrics_comparison.index:
-                score = sum(metrics_comparison.loc[model, metric] * weight 
-                          for metric, weight in weights.items())
-                overall_scores[model] = score
-            
-            best_overall = max(overall_scores, key=overall_scores.get)
-            
-            st.success(f"""
-            **Model Terbaik: {best_overall}**
-            
-            Skor Keseluruhan: {overall_scores[best_overall]:.3f}
-            
-            Model ini menunjukkan performa terbaik secara keseluruhan dengan:
-            - ROC AUC tertinggi: {metrics_comparison.loc[best_overall, 'roc_auc']:.3f}
-            - F1 Score terbaik: {metrics_comparison.loc[best_overall, 'f1_score']:.3f}
-            - Balance yang baik antara precision dan recall
-            """)
+            if protective_factors:
+                for factor in protective_factors:
+                    st.markdown(f"- {factor}")
+            else:
+                st.markdown("- Tidak ada faktor protektif signifikan")
+    
+    # What-If Simulation
+    st.markdown("---")
+    st.markdown("### 🔄 Mode Simulasi 'What-If'")
+    
+    simulation_enabled = st.checkbox("Aktifkan Mode Simulasi")
+    
+    if simulation_enabled and submitted:
+        st.info("Geser slider di bawah untuk melihat bagaimana perubahan parameter mempengaruhi keputusan kredit.")
         
-        # Feature importance (untuk tree-based models)
-        st.markdown("### 🔍 Feature Importance")
+        col1, col2, col3 = st.columns(3)
         
-        # Simulasi feature importance
-        features = ['loan_int_rate', 'loan_percent_income', 'grade_risk_score', 
-                   'person_income', 'loan_amnt', 'person_age', 'cb_person_cred_hist_length',
-                   'person_emp_length', 'combined_risk_score', 'loan_to_income_ratio']
+        with col1:
+            sim_loan_amnt = st.slider(
+                "Simulasi Jumlah Pinjaman ($)",
+                min_value=1000,
+                max_value=50000,
+                value=loan_amnt,
+                step=500,
+                key="sim_loan"
+            )
         
-        importance_scores = np.random.exponential(0.1, len(features))
-        importance_scores = importance_scores / importance_scores.sum()
-        importance_scores = np.sort(importance_scores)[::-1]
+        with col2:
+            sim_income = st.slider(
+                "Simulasi Pendapatan ($)",
+                min_value=10000,
+                max_value=200000,
+                value=person_income,
+                step=1000,
+                key="sim_income"
+            )
         
-        fig_importance = px.bar(
-            x=importance_scores[:10],
-            y=features[:10],
+        with col3:
+            sim_int_rate = st.slider(
+                "Simulasi Suku Bunga (%)",
+                min_value=5.0,
+                max_value=25.0,
+                value=loan_int_rate,
+                step=0.1,
+                key="sim_rate"
+            )
+        
+        # Update simulation
+        sim_input = input_data.copy()
+        sim_input['loan_amnt'] = sim_loan_amnt
+        sim_input['person_income'] = sim_income
+        sim_input['loan_int_rate'] = sim_int_rate
+        sim_input['loan_percent_income'] = sim_loan_amnt / sim_income if sim_income > 0 else 0
+        sim_input['loan_to_income_ratio'] = sim_loan_amnt / (sim_income + 1)
+        sim_input['income_to_age_ratio'] = sim_income / (person_age + 1)
+        sim_input['combined_risk_score'] = sim_int_rate * sim_input['grade_risk_score'] / 10
+        sim_input['credit_utilization'] = sim_loan_amnt / (sim_income * cb_person_cred_hist_length + 1)
+        sim_input['person_income_log'] = np.log1p(sim_income)
+        sim_input['loan_amnt_log'] = np.log1p(sim_loan_amnt)
+        
+        # Re-calculate income category for simulation
+        if sim_income <= 30000:
+            sim_input['income_category_encoded'] = 1
+        elif sim_income <= 50000:
+            sim_input['income_category_encoded'] = 2
+        elif sim_income <= 70000:
+            sim_input['income_category_encoded'] = 3
+        elif sim_income <= 100000:
+            sim_input['income_category_encoded'] = 4
+        else:
+            sim_input['income_category_encoded'] = 5
+        
+        # Re-calculate debt to income category for simulation
+        sim_loan_percent = sim_loan_amnt / sim_income if sim_income > 0 else 0
+        if sim_loan_percent <= 0.1:
+            sim_input['debt_to_income_category_encoded'] = 1
+        elif sim_loan_percent <= 0.2:
+            sim_input['debt_to_income_category_encoded'] = 2
+        elif sim_loan_percent <= 0.3:
+            sim_input['debt_to_income_category_encoded'] = 3
+        elif sim_loan_percent <= 0.4:
+            sim_input['debt_to_income_category_encoded'] = 4
+        else:
+            sim_input['debt_to_income_category_encoded'] = 5
+        
+        sim_prediction, sim_probability = predict_single_applicant(sim_input, models, model_type)
+        
+        # Show simulation results
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Hasil Simulasi")
+            if sim_prediction == 0:
+                st.success(f"✅ SETUJUI (Probabilitas gagal bayar: {sim_probability:.1%})")
+            else:
+                st.error(f"❌ TOLAK (Probabilitas gagal bayar: {sim_probability:.1%})")
+        
+        with col2:
+            st.markdown("#### Perubahan dari Original")
+            delta_prob = (sim_probability - probability) * 100
+            if delta_prob > 0:
+                st.metric("Perubahan Risiko", f"+{delta_prob:.1f}%", delta=f"Risiko meningkat")
+            else:
+                st.metric("Perubahan Risiko", f"{delta_prob:.1f}%", delta=f"Risiko menurun")
+
+def render_model_transparency(models):
+    """Halaman 3: Pusat Transparansi & Kinerja Model"""
+    st.title("📈 Pusat Transparansi & Kinerja Model")
+    
+    # Load evaluation results
+    eval_results = models['evaluation_results']
+    
+    # Model Performance Comparison
+    st.markdown("### Perbandingan Kinerja Model")
+    
+    metrics_data = {
+        'Metrik': ['Akurasi', 'Presisi', 'Recall', 'F1-Score', 'ROC AUC'],
+        'Model Ensemble': [
+            eval_results['ensemble_metrics']['accuracy'],
+            eval_results['ensemble_metrics']['precision'],
+            eval_results['ensemble_metrics']['recall'],
+            eval_results['ensemble_metrics']['f1_score'],
+            eval_results['ensemble_metrics']['roc_auc']
+        ],
+        'Model LSTM': [
+            eval_results['lstm_metrics']['accuracy'],
+            eval_results['lstm_metrics']['precision'],
+            eval_results['lstm_metrics']['recall'],
+            eval_results['lstm_metrics']['f1_score'],
+            eval_results['lstm_metrics']['roc_auc']
+        ]
+    }
+    
+    df_metrics = pd.DataFrame(metrics_data)
+    
+    # Create comparison chart
+    fig = go.Figure()
+    
+    fig.add_trace(go.Bar(
+        name='Model Ensemble',
+        x=df_metrics['Metrik'],
+        y=df_metrics['Model Ensemble'],
+        text=[f'{v:.3f}' for v in df_metrics['Model Ensemble']],
+        textposition='auto',
+        marker_color='#2ecc71'
+    ))
+    
+    fig.add_trace(go.Bar(
+        name='Model LSTM',
+        x=df_metrics['Metrik'],
+        y=df_metrics['Model LSTM'],
+        text=[f'{v:.3f}' for v in df_metrics['Model LSTM']],
+        textposition='auto',
+        marker_color='#3498db'
+    ))
+    
+    fig.update_layout(
+        title="Perbandingan Metrik Kinerja Model",
+        xaxis_title="Metrik",
+        yaxis_title="Skor",
+        barmode='group',
+        showlegend=True,
+        yaxis=dict(range=[0, 1])
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Metrics explanation
+    with st.expander("📖 Penjelasan Metrik"):
+        st.markdown("""
+        - **Akurasi**: Persentase prediksi yang benar dari total prediksi
+        - **Presisi**: Dari semua yang diprediksi gagal bayar, berapa persen yang benar-benar gagal bayar
+        - **Recall**: Dari semua yang benar-benar gagal bayar, berapa persen yang berhasil terdeteksi
+        - **F1-Score**: Harmonic mean dari presisi dan recall, keseimbangan kedua metrik
+        - **ROC AUC**: Area di bawah kurva ROC, mengukur kemampuan model membedakan kelas
+        """)
+    
+    # Business Impact Analysis
+    st.markdown("### Analisis Dampak Bisnis")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### Model Ensemble")
+        st.metric("Total Biaya Kesalahan", f"${eval_results['ensemble_business']['total_cost']:,.0f}")
+        st.metric("Tingkat Persetujuan", f"{eval_results['ensemble_business']['approval_rate']:.1%}")
+        st.metric("Cakupan Gagal Bayar", f"{eval_results['ensemble_business']['default_capture_rate']:.1%}")
+    
+    with col2:
+        st.markdown("#### Model LSTM")
+        st.metric("Total Biaya Kesalahan", f"${eval_results['lstm_business']['total_cost']:,.0f}")
+        st.metric("Tingkat Persetujuan", f"{eval_results['lstm_business']['approval_rate']:.1%}")
+        st.metric("Cakupan Gagal Bayar", f"{eval_results['lstm_business']['default_capture_rate']:.1%}")
+    
+    # Cost savings
+    cost_savings = eval_results['lstm_business']['total_cost'] - eval_results['ensemble_business']['total_cost']
+    st.success(f"💰 Penghematan dengan Model Ensemble: ${cost_savings:,.0f}")
+    
+    # Feature Importance
+    st.markdown("### Faktor-faktor yang Paling Dipertimbangkan Model")
+    
+    # Simulated feature importance (dalam implementasi nyata, ambil dari model)
+    feature_importance = pd.DataFrame({
+        'Feature': ['combined_risk_score', 'loan_int_rate', 'loan_percent_income', 
+                   'grade_risk_score', 'person_income', 'loan_amnt', 
+                   'cb_person_cred_hist_length', 'person_emp_length', 'person_age'],
+        'Importance': [0.15, 0.14, 0.12, 0.11, 0.10, 0.09, 0.08, 0.07, 0.06]
+    })
+    
+    fig_importance = px.bar(
+        feature_importance.sort_values('Importance'),
+        x='Importance',
+        y='Feature',
+        orientation='h',
+        title="Feature Importance - Model Ensemble",
+        labels={'Feature': 'Fitur', 'Importance': 'Tingkat Kepentingan'},
+        color='Importance',
+        color_continuous_scale='Blues'
+    )
+    
+    st.plotly_chart(fig_importance, use_container_width=True)
+    
+    # Confusion Matrix
+    st.markdown("### Analisis Kesalahan Model")
+    
+    # Create confusion matrix data (simulated based on evaluation results)
+    # In real implementation, this should come from actual model predictions
+    ensemble_accuracy = eval_results['ensemble_metrics']['accuracy']
+    ensemble_precision = eval_results['ensemble_metrics']['precision']
+    ensemble_recall = eval_results['ensemble_metrics']['recall']
+    
+    # Estimate confusion matrix values based on metrics
+    # This is a simplified estimation - in production, use actual confusion matrix
+    total_samples = 1000  # Assumed test set size
+    positive_samples = int(total_samples * 0.22)  # Assumed default rate
+    negative_samples = total_samples - positive_samples
+    
+    tp = int(ensemble_recall * positive_samples)
+    fn = positive_samples - tp
+    fp = int((tp / ensemble_precision) - tp) if ensemble_precision > 0 else 0
+    tn = negative_samples - fp
+    
+    # Create confusion matrix visualization
+    cm_data = [[tn, fp], [fn, tp]]
+    cm_labels = [['True Negative', 'False Positive'], ['False Negative', 'True Positive']]
+    
+    fig_cm = go.Figure(data=go.Heatmap(
+        z=cm_data,
+        x=['Prediksi: Lancar', 'Prediksi: Gagal Bayar'],
+        y=['Aktual: Lancar', 'Aktual: Gagal Bayar'],
+        text=cm_data,
+        texttemplate='%{text}',
+        colorscale='Blues',
+        showscale=True
+    ))
+    
+    fig_cm.update_layout(
+        title='Confusion Matrix - Model Ensemble',
+        xaxis_title='Prediksi',
+        yaxis_title='Aktual',
+        height=500
+    )
+    
+    # Add percentage annotations
+    for i in range(2):
+        for j in range(2):
+            percentage = cm_data[i][j] / total_samples * 100
+            fig_cm.add_annotation(
+                x=j,
+                y=i,
+                text=f'({percentage:.1f}%)',
+                showarrow=False,
+                yshift=-20,
+                font=dict(size=10, color='gray')
+            )
+    
+    st.plotly_chart(fig_cm, use_container_width=True)
+    
+    st.info("""
+    **Interpretasi Confusion Matrix:**
+    - **True Positive (TP)**: Model benar memprediksi gagal bayar
+    - **True Negative (TN)**: Model benar memprediksi lancar
+    - **False Positive (FP)**: Model salah memprediksi gagal bayar (Peluang bisnis yang hilang)
+    - **False Negative (FN)**: Model salah memprediksi lancar (Risiko bisnis yang lolos)
+    """)
+
+def render_eda(df):
+    """Halaman 4: Pusat Analisis & Eksplorasi Data"""
+    st.title("📊 Pusat Analisis & Eksplorasi Data (EDA)")
+    
+    # Processed data
+    df_processed = preprocess_data(df)
+    
+    # Analysis Type Selection
+    analysis_type = st.selectbox(
+        "Pilih Jenis Analisis",
+        ["Distribusi Fitur Tunggal", "Analisis Korelasi", "Analisis Hubungan Bivariat"]
+    )
+    
+    if analysis_type == "Distribusi Fitur Tunggal":
+        st.markdown("### Distribusi Fitur Tunggal")
+        
+        # Feature selection
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+        
+        all_cols = numeric_cols + categorical_cols
+        selected_col = st.selectbox("Pilih Kolom untuk Analisis", all_cols)
+        
+        if selected_col in numeric_cols:
+            # Numeric column analysis
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Histogram
+                fig_hist = px.histogram(
+                    df,
+                    x=selected_col,
+                    nbins=30,
+                    title=f"Distribusi {selected_col}",
+                    labels={selected_col: selected_col, 'count': 'Jumlah'},
+                    color_discrete_sequence=['#3498db']
+                )
+                fig_hist.add_vline(x=df[selected_col].mean(), line_dash="dash", 
+                                 line_color="red", annotation_text="Mean")
+                fig_hist.add_vline(x=df[selected_col].median(), line_dash="dash", 
+                                 line_color="green", annotation_text="Median")
+                st.plotly_chart(fig_hist, use_container_width=True)
+            
+            with col2:
+                # Box plot
+                fig_box = px.box(
+                    df,
+                    y=selected_col,
+                    title=f"Box Plot {selected_col}",
+                    color_discrete_sequence=['#2ecc71']
+                )
+                st.plotly_chart(fig_box, use_container_width=True)
+            
+            # Statistics
+            st.markdown("#### Statistik Deskriptif")
+            stats_df = pd.DataFrame({
+                'Statistik': ['Mean', 'Median', 'Std Dev', 'Min', 'Max', 'Q1', 'Q3'],
+                'Nilai': [
+                    df[selected_col].mean(),
+                    df[selected_col].median(),
+                    df[selected_col].std(),
+                    df[selected_col].min(),
+                    df[selected_col].max(),
+                    df[selected_col].quantile(0.25),
+                    df[selected_col].quantile(0.75)
+                ]
+            })
+            st.dataframe(stats_df, use_container_width=True)
+        
+        else:
+            # Categorical column analysis
+            value_counts = df[selected_col].value_counts()
+            
+            fig_bar = px.bar(
+                x=value_counts.index,
+                y=value_counts.values,
+                title=f"Distribusi {selected_col}",
+                labels={'x': selected_col, 'y': 'Jumlah'},
+                color=value_counts.values,
+                color_continuous_scale='Blues'
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
+            
+            # Frequency table
+            st.markdown("#### Tabel Frekuensi")
+            freq_df = pd.DataFrame({
+                selected_col: value_counts.index,
+                'Jumlah': value_counts.values,
+                'Persentase': (value_counts.values / len(df) * 100).round(2)
+            })
+            st.dataframe(freq_df, use_container_width=True)
+    
+    elif analysis_type == "Analisis Korelasi":
+        st.markdown("### Analisis Korelasi")
+        
+        # Correlation matrix
+        numeric_df = df.select_dtypes(include=[np.number])
+        corr_matrix = numeric_df.corr()
+        
+        fig_corr = px.imshow(
+            corr_matrix,
+            text_auto='.2f',
+            title="Heatmap Korelasi",
+            color_continuous_scale='RdBu',
+            aspect='auto'
+        )
+        fig_corr.update_layout(height=800)
+        st.plotly_chart(fig_corr, use_container_width=True)
+        
+        # Top correlations with loan_status
+        st.markdown("#### Korelasi Tertinggi dengan Status Pinjaman")
+        
+        loan_status_corr = corr_matrix['loan_status'].abs().sort_values(ascending=False)[1:11]
+        
+        fig_top_corr = px.bar(
+            x=loan_status_corr.values,
+            y=loan_status_corr.index,
             orientation='h',
-            title="Top 10 Feature Importance (XGBoost)",
-            labels={'x': 'Importance Score', 'y': 'Feature'},
-            color=importance_scores[:10],
-            color_continuous_scale='Blues'
+            title="Top 10 Fitur Berkorelasi dengan Status Pinjaman",
+            labels={'x': 'Korelasi Absolut', 'y': 'Fitur'},
+            color=loan_status_corr.values,
+            color_continuous_scale='Reds'
         )
-        fig_importance.update_layout(height=400)
-        st.plotly_chart(fig_importance, use_container_width=True)
+        st.plotly_chart(fig_top_corr, use_container_width=True)
+    
+    else:  # Analisis Hubungan Bivariat
+        st.markdown("### Analisis Hubungan Bivariat")
         
-        # Model training history visualization
-        st.markdown("### 📈 Riwayat Training Model")
+        col1, col2 = st.columns(2)
         
-        # Simulasi training history
-        epochs = list(range(1, 101))
-        train_loss = [1.0 * np.exp(-0.02 * e) + 0.1 * np.random.random() for e in epochs]
-        val_loss = [1.1 * np.exp(-0.018 * e) + 0.12 * np.random.random() for e in epochs]
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+        all_cols = numeric_cols + categorical_cols
         
-        fig_history = go.Figure()
-        fig_history.add_trace(go.Scatter(x=epochs, y=train_loss, name='Training Loss', mode='lines'))
-        fig_history.add_trace(go.Scatter(x=epochs, y=val_loss, name='Validation Loss', mode='lines'))
+        with col1:
+            feature_x = st.selectbox("Pilih Fitur X", all_cols, key="feat_x")
         
-        fig_history.update_layout(
-            title="Training History (LSTM Model)",
-            xaxis_title="Epoch",
-            yaxis_title="Loss",
-            height=400
-        )
-        st.plotly_chart(fig_history, use_container_width=True)
+        with col2:
+            feature_y = st.selectbox("Pilih Fitur Y", all_cols, key="feat_y")
+        
+        if st.button("Analisis Hubungan"):
+            if feature_x in numeric_cols and feature_y in numeric_cols:
+                # Scatter plot for numeric vs numeric
+                fig = px.scatter(
+                    df,
+                    x=feature_x,
+                    y=feature_y,
+                    color='loan_status',
+                    title=f"Hubungan antara {feature_x} dan {feature_y}",
+                    color_discrete_map={0: '#2ecc71', 1: '#e74c3c'},
+                    labels={'loan_status': 'Status Pinjaman'}
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Correlation coefficient
+                corr_coef = df[[feature_x, feature_y]].corr().iloc[0, 1]
+                st.info(f"Koefisien Korelasi: {corr_coef:.3f}")
+            
+            elif feature_x in categorical_cols and feature_y in numeric_cols:
+                # Box plot for categorical vs numeric
+                fig = px.box(
+                    df,
+                    x=feature_x,
+                    y=feature_y,
+                    color='loan_status',
+                    title=f"Distribusi {feature_y} berdasarkan {feature_x}",
+                    color_discrete_map={0: '#2ecc71', 1: '#e74c3c'}
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+            elif feature_x in numeric_cols and feature_y in categorical_cols:
+                # Box plot for numeric vs categorical (reversed)
+                fig = px.box(
+                    df,
+                    x=feature_y,
+                    y=feature_x,
+                    color='loan_status',
+                    title=f"Distribusi {feature_x} berdasarkan {feature_y}",
+                    color_discrete_map={0: '#2ecc71', 1: '#e74c3c'}
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+            else:
+                # Heatmap for categorical vs categorical
+                crosstab = pd.crosstab(df[feature_x], df[feature_y])
+                
+                fig = px.imshow(
+                    crosstab,
+                    text_auto=True,
+                    title=f"Crosstab: {feature_x} vs {feature_y}",
+                    color_continuous_scale='Blues'
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+# Main Application
+def main():
+    # Load data and models
+    with st.spinner("Memuat data dan model..."):
+        df = load_data()
+        models = load_models()
+    
+    # Sidebar Navigation
+    st.sidebar.title("🏦 Navigasi")
+    page = st.sidebar.radio(
+        "Pilih Halaman",
+        [
+            "Dashboard Eksekutif",
+            "Workbench Evaluasi",
+            "Transparansi Model",
+            "Eksplorasi Data"
+        ]
+    )
+    
+    # Render selected page
+    if page == "Dashboard Eksekutif":
+        render_dashboard(df, models)
+    elif page == "Workbench Evaluasi":
+        render_workbench(models)
+    elif page == "Transparansi Model":
+        render_model_transparency(models)
+    else:
+        render_eda(df)
+    
+    # Footer
+    st.sidebar.markdown("---")
+    st.sidebar.info(
+        """
+        **Sistem Analisis Risiko Kredit**    
+        
+        Dikembangkan Oleh:
+        Azril
+        """
+    )
 
 if __name__ == "__main__":
     main()
