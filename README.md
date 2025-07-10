@@ -1,7 +1,7 @@
 # Credit Risk Analysis
 
 ## Overview
-This project aims to perform **Credit Risk Analysis** on a dataset of loan applicants. The objective is to predict the likelihood of loan defaults using various machine learning models, including **ensemble models**, **LSTM neural networks**, and popular gradient boosting techniques like **XGBoost**, **LightGBM**, and **CatBoost**.
+This project aims to perform **Credit Risk Analysis** on a dataset of loan applicants. The objective is to predict the likelihood of loan defaults using various machine learning models, including **ensemble models**, **LSTM neural networks**
 
 The analysis leverages business metrics such as **approval rate**, **default capture rate**, **precision**, and **AUC** to evaluate the models. The goal is to identify which model is most effective in predicting loan defaults, optimizing for both predictive accuracy and business profitability.
 
@@ -15,10 +15,6 @@ The project consists of the following stages:
 
 2. **Model Training**:
    - Training several machine learning models, including:
-     - **Random Forest**
-     - **XGBoost**
-     - **LightGBM**
-     - **CatBoost**
      - **LSTM (Long Short-Term Memory networks)**
    - Models are evaluated using both traditional performance metrics and business-specific metrics.
 
@@ -44,7 +40,6 @@ This project utilizes several libraries and tools:
 - **Matplotlib & Seaborn**: For data visualization (charts, confusion matrices, etc.).
 - **Scikit-learn**: For training models, cross-validation, and evaluating metrics.
 - **TensorFlow/Keras**: For training deep learning models (LSTM).
-- **XGBoost, LightGBM, CatBoost**: For advanced machine learning models.
 - **Imbalanced-learn (SMOTE)**: For addressing class imbalance.
 - **SciPy**: For statistical tests and optimizations.
 
